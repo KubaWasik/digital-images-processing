@@ -1,0 +1,223 @@
+# %% Change working directory from the workspace root to the ipynb file location. Turn this addition off with the DataScience.changeDirOnImportExport setting
+import math
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import ndimage as ndi
+from scipy.spatial import distance
+from skimage import exposure, filters, io, morphology
+from skimage.color import rgb2gray
+
+# %% [markdown]
+# # Projekt
+# %% [markdown]
+# ##### Wczytanie obrazu i wyliczenie histogramu
+
+# %%
+
+path = './images/'
+img = io.imread(path + 'img14.png')
+
+image = rgb2gray(img)
+
+
+def plot_hist(image, title):
+    hist, bins = exposure.histogram(image)
+    plt.plot(255*bins, hist)
+    plt.suptitle(title)
+    plt.grid('on')
+    plt.show()
+
+
+plt.imshow(image, cmap='gray')
+plt.axis('on')
+plt.suptitle('Analizowany obraz')
+plt.show()
+
+plot_hist(image, 'Histogram')
+
+# %% [markdown]
+# ##### Binaryzacja
+
+# %%
+th = filters.threshold_isodata(image)
+print('Prog binaryzacji: ', th)
+binary = image > th
+
+plt.imshow(binary, cmap='gray')
+plt.axis('on')
+plt.suptitle('Obraz po binaryzacji')
+plt.show()
+
+# %% [markdown]
+# ##### Objętość obiektów na obrazie (przed erozją)
+
+# %%
+label_objects, nb_labels = ndi.label(binary)
+
+
+def getFigure(labelledImage, objNumber):
+
+    points = []
+    for y in range(labelledImage.shape[0]):
+        for x in range(labelledImage.shape[1]):
+            if labelledImage[y, x] == objNumber:
+                points.append((y, x))
+
+    return points
+
+
+number_of_points = 0
+
+for i in range(nb_labels):
+    pts = getFigure(label_objects, i+1)
+    number_of_points += len(pts)
+
+print('Wszystkich punktów:', str((image.shape[0]*(image.shape[1]))))
+print('Punkty należące do obiektów:', str(number_of_points))
+print('Zawartość procentowa obiektów na obrazie: ', number_of_points /
+      (label_objects.shape[0]*(label_objects.shape[1]))*100, '%')
+
+# %% [markdown]
+# ##### Erozja, wypełnienie luk, usunięcie małych elementów i rozpoznanie obiektów na obrazie
+
+# %%
+erosion = morphology.binary_erosion(np.copy(binary), morphology.square(20))
+
+fill = ndi.binary_fill_holes(erosion)
+objects = morphology.remove_small_objects(fill, 200)
+
+label_objects, nb_labels = ndi.label(objects)
+
+sizes = np.bincount(label_objects.ravel())
+mask_sizes = sizes > 20
+mask_sizes[0] = 0
+
+figures = mask_sizes[label_objects]
+
+plt.imshow(figures, cmap="hot")
+plt.axis('on')
+plt.suptitle('Obiekty na obrazie (po erozji)')
+plt.show()
+
+print('Rozmiar maski:', figures.shape)
+print('Rozmiar obrazu:', label_objects.shape)
+print('Ilość obiektów:', nb_labels)
+
+# %% [markdown]
+# ##### Wyznaczenie środków ciężkości
+
+# %%
+plt.imshow(label_objects, cmap='hot')
+
+
+def cog(labelledImage, objNumber):
+    cx = 0
+    cy = 0
+    for y in range(labelledImage.shape[0]):
+        for x in range(labelledImage.shape[1]):
+            if labelledImage[y, x] == objNumber:
+                cy = cy + y
+                cx = cx + x
+
+    cx = cx / sizes[objNumber]
+    cy = cy / sizes[objNumber]
+
+    return int(cy), int(cx)
+
+
+cogs = []
+for i in range(nb_labels):
+    cogs.append(cog(label_objects, i+1))
+
+print(cogs)
+
+# %% [markdown]
+# ##### Narysowanie środków ciężkości na objects na obrazie
+
+# %%
+
+
+def drawMarkers(image, coords):
+
+    image = np.copy(image)
+
+    for item in coords:
+        y, x = item
+        for j in range(y-15, y+16):
+            image[j, x] = 0
+        for i in range(x-15, x+16):
+            image[y, i] = 0
+
+    return image
+
+
+# Po erozji
+lo = drawMarkers(label_objects, cogs)
+plt.figure(figsize=(10, 10))
+plt.imshow(lo, cmap='hot')
+plt.show()
+
+# Przed erozją
+lo = drawMarkers(binary, cogs)
+plt.figure(figsize=(10, 10))
+plt.imshow(lo, cmap='hot')
+plt.show()
+
+# %% [markdown]
+# ##### Obliczanie wielkości każdego obiektu (po erozji) oraz współczynników Blair-Bliss-a i Feret-a
+
+# %%
+
+
+def cog2(points):
+    mx = 0
+    my = 0
+    for (y, x) in points:
+        mx = mx + x
+        my = my + y
+    mx = mx/len(points)
+    my = my/len(points)
+
+    return [my, mx]
+
+
+def computeBB(points):
+
+    s = len(points)
+    my, mx = cog2(pts)
+
+    r = 0
+    for point in points:
+        r = r + distance.euclidean(point, (my, mx))**2
+
+    return s/(math.sqrt(2*math.pi*r))
+
+
+def computeFeret(points):
+
+    px = [x for (y, x) in points]
+    py = [y for (y, x) in points]
+
+    fx = max(px) - min(px)
+    fy = max(py) - min(py)
+
+    return float(fy)/float(fx)
+
+
+sum_after_erosion = 0
+
+for i in range(nb_labels):
+    pts = getFigure(label_objects, i+1)
+    sum_after_erosion += len(pts)
+    percent = len(pts)/(image.shape[0]*image.shape[1])*100
+    bb = computeBB(pts)
+    feret = computeFeret(pts)
+
+    print('Liczba punktow (po erozji):', len(pts), '- {:.2f} %'.format(percent),
+          'Srodek ciezkosci: [{0[1]:.2f}, {0[1]:.2f}]'.format(cog2(pts)),
+          'Blair-Bliss: {:.4f}'.format(bb), 'Feret: {:.4f}'.format(feret))
+
+print('\nSuma punktów obiektów po erozji:', sum_after_erosion, ', różnica (ubytek): ',
+      (number_of_points - sum_after_erosion)/number_of_points*100, '%')
